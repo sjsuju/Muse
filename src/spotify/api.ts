@@ -5,10 +5,33 @@ export class SpotifyFailure extends Error {
     public readonly code: FailureCode,
     message: string,
     public readonly retryAfterSeconds?: number,
+    public readonly diagnostic?: string,
+    public readonly status?: number,
   ) {
     super(message)
     this.name = 'SpotifyFailure'
   }
+}
+
+function safeNetworkMessage(error: Error): string {
+  const message = error.message
+  if (/illegal invocation/i.test(message)) return 'Illegal invocation'
+  if (/content security policy|\bcsp\b/i.test(message)) return 'Blocked by Content Security Policy'
+  if (/cross-origin|access control|\bcors\b/i.test(message)) return 'Blocked by cross-origin policy'
+  if (/failed to fetch|load failed|network(?:error| request failed)/i.test(message)) {
+    return 'Failed to fetch'
+  }
+  const chromiumCode = message.match(/net::ERR_[A-Z_]+/)?.[0]
+  return chromiumCode ?? 'Request failed before Spotify responded'
+}
+
+function networkDiagnostic(error: unknown): string {
+  const name = error instanceof Error ? error.name : 'UnknownError'
+  const message = error instanceof Error
+    ? safeNetworkMessage(error)
+    : 'Request failed before Spotify responded'
+  const online = typeof navigator === 'undefined' ? 'unknown' : navigator.onLine ? 'yes' : 'no'
+  return `Spotify API | online: ${online} | ${name}: ${message}`
 }
 
 type AccessTokenProvider = (refresh?: boolean) => Promise<string>
@@ -22,10 +45,12 @@ export class SpotifyApiClient {
   async request<T>(path: string, init: RequestInit = {}, retried = false): Promise<T> {
     const token = await this.getAccessToken(retried)
     let response: Response
+    const fetcher = this.fetcher
+    const requestUrl = path.startsWith('http') ? path : `https://api.spotify.com/v1${path}`
 
     try {
-      response = await this.fetcher(
-        path.startsWith('http') ? path : `https://api.spotify.com/v1${path}`,
+      response = await fetcher(
+        requestUrl,
         {
           ...init,
           headers: {
@@ -35,8 +60,13 @@ export class SpotifyApiClient {
           },
         },
       )
-    } catch {
-      throw new SpotifyFailure('network', 'Spotify could not be reached')
+    } catch (error) {
+      throw new SpotifyFailure(
+        'network',
+        'Spotify could not be reached',
+        undefined,
+        networkDiagnostic(error),
+      )
     }
 
     if (response.status === 401 && !retried) {
@@ -55,7 +85,13 @@ export class SpotifyApiClient {
             : response.status >= 500
               ? 'service'
               : 'service'
-      throw new SpotifyFailure(code, `Spotify request failed with status ${response.status}`)
+      throw new SpotifyFailure(
+        code,
+        `Spotify request failed with status ${response.status}`,
+        undefined,
+        `Spotify API returned HTTP ${response.status} for ${new URL(requestUrl).pathname}`,
+        response.status,
+      )
     }
     if (response.status === 204) return undefined as T
     return response.json() as Promise<T>

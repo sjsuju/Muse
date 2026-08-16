@@ -26,6 +26,7 @@ interface SpotifyPlayerOptions {
 interface SpotifyPlayer {
   connect(): Promise<boolean>
   disconnect(): void
+  activateElement(): Promise<void>
   addListener(event: string, callback: (value: never) => void): boolean
   removeListener(event?: string): void
   togglePlay(): Promise<void>

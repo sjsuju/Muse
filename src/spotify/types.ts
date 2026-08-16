@@ -26,13 +26,29 @@ export interface SpotifyPlaylist {
   description?: string
   images: SpotifyImage[]
   owner?: { display_name?: string }
-  tracks: SpotifyPage<{ track: SpotifyTrack | null }> | { total: number }
+  items?: SpotifyPage<{ item?: SpotifyTrack | null; track?: SpotifyTrack | null } | null> | { total: number } | null
+  tracks?: SpotifyPage<{ item?: SpotifyTrack | null; track?: SpotifyTrack | null } | null> | { total: number } | null
 }
 export interface SpotifyPage<T> { items: T[]; total: number; next: string | null }
-export interface SavedTrack { added_at: string; track: SpotifyTrack }
-export interface SavedAlbum { added_at: string; album: SpotifyAlbum }
+export interface SavedTrack { added_at: string; track: SpotifyTrack | null }
+export interface SavedAlbum { added_at: string; album: SpotifyAlbum | null }
 export interface SearchResults {
-  tracks?: SpotifyPage<SpotifyTrack>
-  albums?: SpotifyPage<SpotifyAlbum>
+  tracks?: SpotifyPage<SpotifyTrack | null>
+  albums?: SpotifyPage<SpotifyAlbum | null>
   playlists?: SpotifyPage<SpotifyPlaylist | null>
+}
+
+export function compactSpotifyItems<T>(
+  items: readonly (T | null | undefined)[] | null | undefined,
+): T[] {
+  return items?.filter((item): item is T => item != null) ?? []
+}
+
+export function playablePlaylistTracks(
+  items: readonly ({ item?: SpotifyTrack | null; track?: SpotifyTrack | null } | null | undefined)[] | null | undefined,
+): SpotifyTrack[] {
+  return compactSpotifyItems(items).flatMap((entry) => {
+    const track = entry.item ?? entry.track
+    return track?.album && Array.isArray(track.artists) && track.is_playable !== false ? [track] : []
+  })
 }

@@ -23,13 +23,13 @@ export function PlayerBar() {
 
   return (
     <footer className="player-bar" aria-label="Music player">
-      <div className="now-playing">
+      <div className="now-playing" aria-live="polite">
         {track?.album.images[0]?.url
           ? <img src={track.album.images[0].url} alt="" />
           : <div className="artwork-placeholder" aria-hidden="true" />}
         <div>
           <strong>{track?.name ?? 'Choose something to play'}</strong>
-          <span>{track?.artists.map((artist) => artist.name).join(', ') ?? 'Muse is ready'}</span>
+          <span>{playback.error ? `Playback issue: ${playback.error}` : track?.artists.map((artist) => artist.name).join(', ') ?? 'Muse is ready'}</span>
         </div>
       </div>
       <div className="transport">

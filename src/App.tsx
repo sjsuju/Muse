@@ -15,7 +15,12 @@ function OfflineGuard() {
   useEffect(() => {
     const onOffline = () => {
       if (!location.pathname.startsWith('/failure/')) {
-        navigate('/failure/network', { state: { returnTo: location.pathname + location.search } })
+        navigate('/failure/network', {
+          state: {
+            returnTo: location.pathname + location.search,
+            diagnostic: 'Browser offline event | online: no',
+          },
+        })
       }
     }
     window.addEventListener('offline', onOffline)

@@ -15,6 +15,7 @@ export interface FailureState {
   returnTo: string
   retryAt?: number
   correlationId?: string
+  diagnostic?: string
 }
 
 export interface FailureDefinition {
@@ -89,5 +90,6 @@ export function safeFailureState(value: Partial<FailureState> | null | undefined
     returnTo: returnTo?.startsWith('/') && !returnTo.startsWith('//') ? returnTo : '/',
     ...(typeof value?.retryAt === 'number' ? { retryAt: value.retryAt } : {}),
     ...(value?.correlationId ? { correlationId: value.correlationId.slice(0, 64) } : {}),
+    ...(value?.diagnostic ? { diagnostic: value.diagnostic.slice(0, 160) } : {}),
   }
 }

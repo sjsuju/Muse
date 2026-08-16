@@ -19,4 +19,10 @@ describe('failure catalog', () => {
     expect(safeFailureState({ returnTo: 'https://attacker.example' }).returnTo).toBe('/')
     expect(safeFailureState({ returnTo: '/search' }).returnTo).toBe('/search')
   })
+
+  it('keeps bounded diagnostic text for a failure page', () => {
+    const state = safeFailureState({ returnTo: '/', diagnostic: 'x'.repeat(300) })
+
+    expect(state.diagnostic).toHaveLength(160)
+  })
 })

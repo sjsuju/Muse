@@ -1,12 +1,16 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/AuthProvider'
 import { useSpotifyClient } from '../spotify/useSpotify'
+import { createDeviceActivator, retryPlayerCommand } from './activateDevice'
+import { createDeviceGate } from './deviceGate'
+import { runPlaybackAction } from './playbackAction'
 
 interface PlaybackContextValue {
   state: SpotifyWebPlaybackState | null
   ready: boolean
+  error: string | null
   playTrack: (uri: string) => Promise<void>
   playContext: (uri: string, offsetUri?: string) => Promise<void>
   togglePlay: () => Promise<void>
@@ -39,9 +43,35 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   const { getAccessToken } = useAuth()
   const api = useSpotifyClient()
   const navigate = useNavigate()
+  const getAccessTokenRef = useRef(getAccessToken)
+  const navigateRef = useRef(navigate)
+  getAccessTokenRef.current = getAccessToken
+  navigateRef.current = navigate
   const [player, setPlayer] = useState<SpotifyPlayer | null>(null)
   const [deviceId, setDeviceId] = useState<string | null>(null)
   const [state, setState] = useState<SpotifyWebPlaybackState | null>(null)
+  const [playbackError, setPlaybackError] = useState<string | null>(null)
+  const deviceGate = useRef(createDeviceGate())
+  const activateDevice = useMemo(
+    () => createDeviceActivator((path, init) => api.request(path, init)),
+    [api],
+  )
+  const runPlayerCommand = useCallback(async (
+    readyDeviceId: string,
+    path: string,
+    init: RequestInit,
+  ) => retryPlayerCommand(
+    () => api.request(path, init),
+    async () => {
+      activateDevice.reset()
+      await activateDevice(readyDeviceId)
+      await new Promise<void>((resolve) => setTimeout(resolve, 250))
+    },
+  ), [activateDevice, api])
+  const perform = useCallback(
+    async (action: () => Promise<unknown>) => { await runPlaybackAction(action, setPlaybackError) },
+    [],
+  )
 
   useEffect(() => {
     let active = true
@@ -51,67 +81,115 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       instance = new window.Spotify.Player({
         name: 'Muse on this Chromebook',
         volume: 0.75,
-        getOAuthToken: (callback) => { void getAccessToken().then(callback) },
+        getOAuthToken: (callback) => { void getAccessTokenRef.current().then(callback) },
       })
+      setPlayer(instance)
       instance.addListener('ready', ((value: { device_id: string }) => {
         setDeviceId(value.device_id)
-        setPlayer(instance)
+        deviceGate.current.ready(value.device_id)
+      }) as (value: never) => void)
+      instance.addListener('not_ready', ((value: { device_id: string }) => {
+        setDeviceId((current) => current === value.device_id ? null : current)
+        deviceGate.current.unavailable()
       }) as (value: never) => void)
       instance.addListener('player_state_changed', ((value: SpotifyWebPlaybackState | null) => {
         if (value) setState(value)
       }) as (value: never) => void)
-      instance.addListener('authentication_error', (() => navigate('/failure/auth')) as (value: never) => void)
-      instance.addListener('account_error', (() => navigate('/failure/account')) as (value: never) => void)
-      instance.addListener('initialization_error', (() => navigate('/failure/browser')) as (value: never) => void)
-      instance.addListener('playback_error', (() => navigate('/failure/device')) as (value: never) => void)
-      void instance.connect()
-    }).catch(() => navigate('/failure/service'))
+      instance.addListener('authentication_error', (() => navigateRef.current('/failure/auth')) as (value: never) => void)
+      instance.addListener('account_error', (() => navigateRef.current('/failure/account')) as (value: never) => void)
+      instance.addListener('initialization_error', (() => navigateRef.current('/failure/browser')) as (value: never) => void)
+      instance.addListener('playback_error', ((value: { message?: string }) => {
+        setPlaybackError(value.message?.slice(0, 160) || 'Spotify rejected that playback command')
+      }) as (value: never) => void)
+      void instance.connect().then((connected) => {
+        if (!connected) {
+          deviceGate.current.fail('Spotify declined to activate this browser as a playback device')
+          navigateRef.current('/failure/device', {
+            state: { diagnostic: 'Spotify SDK connect returned false' },
+          })
+        }
+      }).catch(() => {
+        deviceGate.current.fail('Spotify playback connection failed')
+        navigateRef.current('/failure/device', {
+          state: { diagnostic: 'Spotify SDK connection rejected' },
+        })
+      })
+    }).catch(() => navigateRef.current('/failure/service'))
     return () => {
       active = false
       instance?.disconnect()
+      deviceGate.current.dispose()
     }
-  }, [getAccessToken, navigate])
-
-  const requireDevice = useCallback(() => {
-    if (!deviceId) throw new Error('Spotify playback device is not ready')
-    return deviceId
-  }, [deviceId])
+  // The SDK must live for the provider lifetime; route changes must not recreate it.
+  }, [])
 
   const playTrack = useCallback(async (uri: string) => {
-    await api.request(`/me/player/play?device_id=${encodeURIComponent(requireDevice())}`, {
-      method: 'PUT',
-      body: JSON.stringify({ uris: [uri] }),
+    await perform(async () => {
+      await player?.activateElement()
+      const readyDeviceId = await deviceGate.current.wait()
+      await activateDevice(readyDeviceId)
+      await runPlayerCommand(readyDeviceId, `/me/player/play?device_id=${encodeURIComponent(readyDeviceId)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ uris: [uri] }),
+      })
     })
-  }, [api, requireDevice])
+  }, [activateDevice, perform, player, runPlayerCommand])
 
   const playContext = useCallback(async (uri: string, offsetUri?: string) => {
-    await api.request(`/me/player/play?device_id=${encodeURIComponent(requireDevice())}`, {
-      method: 'PUT',
-      body: JSON.stringify({ context_uri: uri, ...(offsetUri ? { offset: { uri: offsetUri } } : {}) }),
+    await perform(async () => {
+      await player?.activateElement()
+      const readyDeviceId = await deviceGate.current.wait()
+      await activateDevice(readyDeviceId)
+      await runPlayerCommand(readyDeviceId, `/me/player/play?device_id=${encodeURIComponent(readyDeviceId)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ context_uri: uri, ...(offsetUri ? { offset: { uri: offsetUri } } : {}) }),
+      })
     })
-  }, [api, requireDevice])
+  }, [activateDevice, perform, player, runPlayerCommand])
 
   const setShuffle = useCallback(async (shuffle: boolean) => {
-    await api.request(`/me/player/shuffle?state=${shuffle}&device_id=${encodeURIComponent(requireDevice())}`, { method: 'PUT' })
-  }, [api, requireDevice])
+    await perform(async () => {
+      const readyDeviceId = await deviceGate.current.wait()
+      await activateDevice(readyDeviceId)
+      await runPlayerCommand(readyDeviceId, `/me/player/shuffle?state=${shuffle}&device_id=${encodeURIComponent(readyDeviceId)}`, { method: 'PUT' })
+    })
+  }, [activateDevice, perform, runPlayerCommand])
 
   const setRepeat = useCallback(async (mode: 'off' | 'context' | 'track') => {
-    await api.request(`/me/player/repeat?state=${mode}&device_id=${encodeURIComponent(requireDevice())}`, { method: 'PUT' })
-  }, [api, requireDevice])
+    await perform(async () => {
+      const readyDeviceId = await deviceGate.current.wait()
+      await activateDevice(readyDeviceId)
+      await runPlayerCommand(readyDeviceId, `/me/player/repeat?state=${mode}&device_id=${encodeURIComponent(readyDeviceId)}`, { method: 'PUT' })
+    })
+  }, [activateDevice, perform, runPlayerCommand])
 
   const value = useMemo<PlaybackContextValue>(() => ({
     state,
     ready: Boolean(player && deviceId),
+    error: playbackError,
     playTrack,
     playContext,
-    togglePlay: async () => { await player?.togglePlay() },
-    next: async () => { await player?.nextTrack() },
-    previous: async () => { await player?.previousTrack() },
-    seek: async (positionMs) => { await player?.seek(positionMs) },
-    setVolume: async (volume) => { await player?.setVolume(volume) },
+    togglePlay: async () => { await perform(async () => {
+      const readyDeviceId = await deviceGate.current.wait()
+      await player?.activateElement()
+      await activateDevice(readyDeviceId)
+      await player?.togglePlay()
+    }) },
+    next: async () => { await perform(async () => {
+      const readyDeviceId = await deviceGate.current.wait()
+      await activateDevice(readyDeviceId)
+      await player?.nextTrack()
+    }) },
+    previous: async () => { await perform(async () => {
+      const readyDeviceId = await deviceGate.current.wait()
+      await activateDevice(readyDeviceId)
+      await player?.previousTrack()
+    }) },
+    seek: async (positionMs) => { await perform(async () => { await player?.seek(positionMs) }) },
+    setVolume: async (volume) => { await perform(async () => { await player?.setVolume(volume) }) },
     setShuffle,
     setRepeat,
-  }), [deviceId, playContext, playTrack, player, setRepeat, setShuffle, state])
+  }), [activateDevice, deviceId, perform, playContext, playbackError, playTrack, player, setRepeat, setShuffle, state])
 
   return <PlaybackContext.Provider value={value}>{children}</PlaybackContext.Provider>
 }

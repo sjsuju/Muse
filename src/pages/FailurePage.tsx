@@ -11,7 +11,9 @@ export function FailurePage() {
   const navigate = useNavigate()
   const heading = useRef<HTMLHeadingElement>(null)
   const definition = getFailureDefinition(code)
-  const state = safeFailureState(location.state as { returnTo?: string; retryAt?: number } | null)
+  const state = safeFailureState(
+    location.state as { returnTo?: string; retryAt?: number; diagnostic?: string } | null,
+  )
   const retryBlocked = definition.code === 'rate-limit' && Boolean(state.retryAt && state.retryAt > Date.now())
 
   useEffect(() => heading.current?.focus(), [])
@@ -32,6 +34,7 @@ export function FailurePage() {
         <h1 id="failure-title" ref={heading} tabIndex={-1}>{definition.title}</h1>
         <p className="failure-issue">{definition.issue}</p>
         <p className="failure-code">Issue: {definition.code}</p>
+        {state.diagnostic ? <p className="failure-code">Detail: {state.diagnostic}</p> : null}
         <div className="failure-actions">
           <button className="primary-button" type="button" onClick={recover} disabled={retryBlocked}>
             <Repeat weight="bold" /> {retryBlocked ? 'Retry shortly' : definition.actionLabel}

@@ -33,6 +33,7 @@ export function useSpotifyData<T>(path: string | null) {
           ...(failure.retryAfterSeconds
             ? { retryAt: Date.now() + failure.retryAfterSeconds * 1000 }
             : {}),
+          ...(failure.diagnostic ? { diagnostic: failure.diagnostic } : {}),
         },
       })
     }).finally(() => {
