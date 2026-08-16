@@ -1,0 +1,6 @@
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self' https://sdk.scdn.co; connect-src 'self' https://*.spotify.com wss://*.spotify.com https://*.spotifycdn.com; img-src 'self' data: https://*.scdn.co https://*.spotifycdn.com; media-src blob: https://*.spotifycdn.com; style-src 'self'; worker-src 'self' blob:; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self' https://accounts.spotify.com
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()

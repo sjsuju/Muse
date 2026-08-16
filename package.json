@@ -11,6 +11,8 @@
     "test:run": "vitest run --config vitest.config.ts",
     "typecheck": "tsc -b",
     "lint": "eslint .",
+    "audit:secrets": "node scripts/audit-secrets.mjs",
+    "icons": "node scripts/generate-icons.mjs",
     "import:spotify-config": "node scripts/import-spotify-config.mjs"
   },
   "dependencies": {
@@ -24,10 +26,13 @@
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.4",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^6.0.5",
     "eslint": "^10.8.1",
     "globals": "^17.11.0",
     "jsdom": "^30.0.1",
+    "sharp": "^0.35.3",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.67.0",
     "vite": "^8.2.1",
