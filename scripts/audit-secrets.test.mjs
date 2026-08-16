@@ -16,7 +16,7 @@ describe('auditSecretValue', () => {
     await writeFile(join(root, 'leak.txt'), 'private-value-123')
 
     const error = await auditSecretValue({ secretSource: source, roots: [root], localEnvironment })
-      .then(() => null, (reason) => reason as Error)
+      .then(() => null, (reason) => reason instanceof Error ? reason : new Error(String(reason)))
     expect(error?.message).toContain('leak.txt')
     expect(error?.message).not.toContain('private-value-123')
   })
