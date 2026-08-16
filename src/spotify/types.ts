@@ -47,8 +47,15 @@ export function compactSpotifyItems<T>(
 export function playablePlaylistTracks(
   items: readonly ({ item?: SpotifyTrack | null; track?: SpotifyTrack | null } | null | undefined)[] | null | undefined,
 ): SpotifyTrack[] {
-  return compactSpotifyItems(items).flatMap((entry) => {
+  return playablePlaylistEntries(items).map((entry) => entry.track)
+}
+
+export function playablePlaylistEntries(
+  items: readonly ({ item?: SpotifyTrack | null; track?: SpotifyTrack | null } | null | undefined)[] | null | undefined,
+): Array<{ track: SpotifyTrack; position: number }> {
+  return items?.flatMap((entry, position) => {
+    if (!entry) return []
     const track = entry.item ?? entry.track
-    return track?.album && Array.isArray(track.artists) && track.is_playable !== false ? [track] : []
-  })
+    return track?.album && Array.isArray(track.artists) && track.is_playable !== false ? [{ track, position }] : []
+  }) ?? []
 }

@@ -93,7 +93,7 @@ export class SpotifyApiClient {
         response.status,
       )
     }
-    if (response.status === 204) return undefined as T
+    if (response.status === 204 || (init.method && init.method.toUpperCase() !== 'GET')) return undefined as T
     return response.json() as Promise<T>
   }
 }

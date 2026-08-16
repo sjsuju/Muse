@@ -5,7 +5,7 @@ import { EmptyState, LoadingGrid } from '../components/AsyncState'
 import { MediaCard } from '../components/MediaCard'
 import { TrackList } from '../components/TrackList'
 import { usePlayback } from '../playback/PlaybackProvider'
-import { compactSpotifyItems, playablePlaylistTracks } from '../spotify/types'
+import { compactSpotifyItems, playablePlaylistEntries } from '../spotify/types'
 import type { SavedAlbum, SavedTrack, SearchResults, SpotifyAlbum, SpotifyPage, SpotifyPlaylist, SpotifyTrack } from '../spotify/types'
 import { useSpotifyData } from '../spotify/useSpotify'
 import { spotifySearchPath } from '../spotify/paths'
@@ -25,8 +25,14 @@ function useSafePlayback() {
     },
   })
   return {
-    track: (uri: string) => void playback.playTrack(uri).catch(handleFailure),
-    context: (uri: string, offset?: string) => void playback.playContext(uri, offset).catch(handleFailure),
+    track: (uri: string, visibleUris?: string[]) => void playback.playTrack(uri, visibleUris).catch(handleFailure),
+    context: (uri: string, offset?: string, visibleUris?: string[], offsetPosition?: number) => void (
+      offsetPosition !== undefined
+        ? playback.playContext(uri, offset, visibleUris, offsetPosition)
+        : visibleUris
+          ? playback.playContext(uri, offset, visibleUris)
+          : playback.playContext(uri, offset)
+    ).catch(handleFailure),
   }
 }
 
@@ -54,8 +60,9 @@ export function HomePage() {
 export function TracksPage() {
   const result = useSpotifyData<SpotifyPage<SavedTrack | null>>('/me/tracks?limit=50')
   const play = useSafePlayback()
-  const tracks = compactSpotifyItems(result.data?.items).flatMap((item) => compactSpotifyItems([item.track]))
-  return <div className="page"><PageHeader title="Saved tracks" body="The songs you kept, in one place." />{result.loading ? <LoadingGrid /> : tracks.length ? <TrackList tracks={tracks} onPlay={(track) => play.track(track.uri)} /> : <EmptyState title="No saved tracks" body="Use Spotify's save button and your tracks will collect here." />}</div>
+  const tracks = compactSpotifyItems(result.data?.items).flatMap((item) => compactSpotifyItems([item.track])).filter((track) => track.is_playable !== false)
+  const visibleUris = tracks.map((track) => track.uri)
+  return <div className="page"><PageHeader title="Saved tracks" body="The songs you kept, in one place." />{result.loading ? <LoadingGrid /> : tracks.length ? <TrackList tracks={tracks} onPlay={(track) => play.track(track.uri, visibleUris)} /> : <EmptyState title="No saved tracks" body="Use Spotify's save button and your tracks will collect here." />}</div>
 }
 
 export function AlbumsPage() {
@@ -75,13 +82,14 @@ export function SearchPage() {
   const deferred = useDeferredValue(query.trim())
   const result = useSpotifyData<SearchResults>(deferred ? spotifySearchPath(deferred) : null)
   const play = useSafePlayback()
-  const tracks = compactSpotifyItems(result.data?.tracks?.items)
+  const tracks = compactSpotifyItems(result.data?.tracks?.items).filter((track) => track.is_playable !== false)
+  const visibleUris = tracks.map((track) => track.uri)
   const albums = compactSpotifyItems(result.data?.albums?.items)
   const playlists = compactSpotifyItems(result.data?.playlists?.items)
   return <div className="page"><PageHeader title="Search Spotify" body="Find a track, album, or playlist." />
     <label className="search-field"><MagnifyingGlass /><span className="sr-only">Search Spotify</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="What do you want to hear?" autoFocus /></label>
     {!deferred ? <EmptyState title="Start with a name" body="Try an artist, song, album, or playlist." /> : result.loading ? <LoadingGrid /> : <div className="search-results">
-      {tracks.length ? <section><h2>Tracks</h2><TrackList tracks={tracks} onPlay={(track) => play.track(track.uri)} /></section> : null}
+      {tracks.length ? <section><h2>Tracks</h2><TrackList tracks={tracks} onPlay={(track) => play.track(track.uri, visibleUris)} /></section> : null}
       {albums.length ? <section><h2>Albums</h2><AlbumGrid albums={albums} /></section> : null}
       {playlists.length ? <section><h2>Playlists</h2><PlaylistGrid playlists={playlists} /></section> : null}
       {!tracks.length && !albums.length && !playlists.length ? <EmptyState title="Nothing matched" body="Try a shorter or more specific search." /> : null}
@@ -95,8 +103,9 @@ export function AlbumPage() {
   const play = useSafePlayback()
   if (result.loading || !result.data) return <div className="page"><LoadingGrid /></div>
   const album = result.data
-  const tracks = (album.tracks?.items ?? []).map((track) => ({ ...track, album }))
-  return <div className="page"><header className="detail-header">{album.images[0]?.url ? <img src={album.images[0].url} alt="" /> : null}<div><p className="eyebrow">Album</p><h1>{album.name}</h1><p>{album.artists.map((artist) => artist.name).join(', ')}</p><button className="primary-button" type="button" onClick={() => play.context(album.uri)}>Play album</button></div></header><TrackList tracks={tracks} onPlay={(track) => play.track(track.uri)} /></div>
+  const tracks = (album.tracks?.items ?? []).filter((track) => track.is_playable !== false).map((track) => ({ ...track, album }))
+  const visibleUris = tracks.map((track) => track.uri)
+  return <div className="page"><header className="detail-header">{album.images[0]?.url ? <img src={album.images[0].url} alt="" /> : null}<div><p className="eyebrow">Album</p><h1>{album.name}</h1><p>{album.artists.map((artist) => artist.name).join(', ')}</p><button className="primary-button" type="button" onClick={() => play.context(album.uri)}>Play album</button></div></header><TrackList tracks={tracks} onPlay={(track) => play.context(album.uri, track.uri, visibleUris)} /></div>
 }
 
 interface PlaylistDetail extends Omit<SpotifyPlaylist, 'items' | 'tracks'> {
@@ -111,7 +120,9 @@ export function PlaylistPage() {
   if (result.loading || !result.data) return <div className="page"><LoadingGrid /></div>
   const playlist = result.data
   const playlistItems = playlist.items ?? playlist.tracks
-  const tracks = playablePlaylistTracks(playlistItems?.items)
+  const trackEntries = playablePlaylistEntries(playlistItems?.items)
+  const tracks = trackEntries.map((entry) => entry.track)
+  const visibleUris = tracks.map((track) => track.uri)
   const image = playlist.images?.[0]?.url
-  return <div className="page"><header className="detail-header">{image ? <img src={image} alt="" /> : null}<div><p className="eyebrow">Playlist</p><h1>{playlist.name}</h1><p>{playlist.description || `${playlistItems?.total ?? tracks.length} tracks`}</p><button className="primary-button" type="button" onClick={() => play.context(playlist.uri)}>Play playlist</button></div></header><TrackList tracks={tracks} onPlay={(track) => play.track(track.uri)} /></div>
+  return <div className="page"><header className="detail-header">{image ? <img src={image} alt="" /> : null}<div><p className="eyebrow">Playlist</p><h1>{playlist.name}</h1><p>{playlist.description || `${playlistItems?.total ?? tracks.length} tracks`}</p><button className="primary-button" type="button" onClick={() => play.context(playlist.uri)}>Play playlist</button></div></header><TrackList tracks={tracks} onPlay={(track) => play.context(playlist.uri, track.uri, visibleUris, trackEntries.find((entry) => entry.track === track)!.position)} /></div>
 }

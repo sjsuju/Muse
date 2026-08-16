@@ -32,4 +32,28 @@ describe('Spotify playback device activation', () => {
     expect(reactivate).toHaveBeenCalledOnce()
     expect(command).toHaveBeenCalledTimes(2)
   })
+
+  it('serializes concurrent activation requests for different device ids', async () => {
+    let releaseFirst!: () => void
+    const firstRequest = new Promise<void>((resolve) => { releaseFirst = resolve })
+    const request = vi.fn()
+      .mockReturnValueOnce(firstRequest)
+      .mockResolvedValueOnce(undefined)
+    const activate = createDeviceActivator(request)
+
+    const firstActivation = activate('device-1')
+    const secondActivation = activate('device-2')
+    await Promise.resolve()
+    expect(request).toHaveBeenCalledTimes(1)
+
+    releaseFirst()
+    await Promise.all([firstActivation, secondActivation])
+
+    expect(request).toHaveBeenNthCalledWith(2, '/me/player', {
+      method: 'PUT',
+      body: JSON.stringify({ device_ids: ['device-2'], play: false }),
+    })
+    await activate('device-2')
+    expect(request).toHaveBeenCalledTimes(2)
+  })
 })

@@ -20,6 +20,11 @@ export function PlayerBar() {
   const position = playback.state?.position ?? 0
   const duration = playback.state?.duration ?? track?.duration_ms ?? 0
   const repeatMode = playback.state?.repeat_mode ?? 0
+  const paused = playback.state?.paused ?? true
+  const restrictions = playback.state?.restrictions ?? {}
+  const repeat = nextRepeatMode(repeatMode, restrictions)
+  const currentRepeat = repeatMode === 1 ? 'context' : repeatMode === 2 ? 'track' : 'off'
+  const disabled = (restriction?: string) => !playback.ready || !playback.state || Boolean(restriction && restrictions[restriction])
 
   return (
     <footer className="player-bar" aria-label="Music player">
@@ -29,28 +34,33 @@ export function PlayerBar() {
           : <div className="artwork-placeholder" aria-hidden="true" />}
         <div>
           <strong>{track?.name ?? 'Choose something to play'}</strong>
-          <span>{playback.error ? `Playback issue: ${playback.error}` : track?.artists.map((artist) => artist.name).join(', ') ?? 'Muse is ready'}</span>
+          <span title={playback.error ?? undefined}>{playback.error ? `Playback issue: ${playback.error}` : track?.artists.map((artist) => artist.name).join(', ') ?? 'Muse is ready'}</span>
         </div>
       </div>
       <div className="transport">
         <div className="transport-buttons">
-          <button type="button" aria-label="Shuffle" className={playback.state?.shuffle ? 'is-active' : ''} onClick={() => void playback.setShuffle(!playback.state?.shuffle)}><Shuffle /></button>
-          <button type="button" aria-label="Previous track" onClick={() => void playback.previous()}><SkipBack weight="fill" /></button>
-          <button className="play-button" type="button" aria-label={playback.state?.paused ? 'Play' : 'Pause'} onClick={() => void playback.togglePlay()} disabled={!playback.ready}>{playback.state?.paused ? <Play weight="fill" /> : <Pause weight="fill" />}</button>
-          <button type="button" aria-label="Next track" onClick={() => void playback.next()}><SkipForward weight="fill" /></button>
-          <button type="button" aria-label="Repeat" className={repeatMode ? 'is-active' : ''} onClick={() => void playback.setRepeat(repeatMode === 0 ? 'context' : repeatMode === 1 ? 'track' : 'off')}>{repeatMode === 2 ? <RepeatOnce /> : <Repeat />}</button>
+          <button type="button" aria-label="Shuffle" className={playback.state?.shuffle ? 'is-active' : ''} onClick={() => void playback.setShuffle(!playback.state?.shuffle)} disabled={disabled('disallow_toggling_shuffle')}><Shuffle /></button>
+          <button type="button" aria-label="Previous track" onClick={() => void playback.previous()} disabled={disabled('disallow_skipping_prev')}><SkipBack weight="fill" /></button>
+          <button className="play-button" type="button" aria-label={paused ? 'Play' : 'Pause'} onClick={() => void playback.togglePlay()} disabled={disabled(paused ? 'disallow_resuming' : 'disallow_pausing')}>{paused ? <Play weight="fill" /> : <Pause weight="fill" />}</button>
+          <button type="button" aria-label="Next track" onClick={() => void playback.next()} disabled={disabled('disallow_skipping_next')}><SkipForward weight="fill" /></button>
+          <button type="button" aria-label="Repeat" className={repeatMode ? 'is-active' : ''} onClick={() => void playback.setRepeat(repeat)} disabled={disabled() || repeat === currentRepeat}>{repeatMode === 2 ? <RepeatOnce /> : <Repeat />}</button>
         </div>
         <div className="progress-row">
           <span>{formatTime(position)}</span>
-          <input aria-label="Track position" type="range" min="0" max={Math.max(duration, 1)} value={Math.min(position, duration)} onChange={(event) => void playback.seek(Number(event.target.value))} />
+          <input aria-label="Track position" type="range" min="0" max={Math.max(duration, 1)} value={Math.min(position, duration)} onChange={(event) => void playback.seek(Number(event.target.value))} disabled={disabled('disallow_seeking')} />
           <span>{formatTime(duration)}</span>
         </div>
       </div>
       <label className="volume-control">
         <SpeakerHigh aria-hidden="true" />
         <span className="sr-only">Volume</span>
-        <input aria-label="Volume" type="range" min="0" max="1" step="0.05" defaultValue="0.75" onChange={(event) => void playback.setVolume(Number(event.target.value))} />
+        <input aria-label="Volume" type="range" min="0" max="1" step="0.05" defaultValue="0.75" onChange={(event) => void playback.setVolume(Number(event.target.value))} disabled={disabled('disallow_setting_volume')} />
       </label>
     </footer>
   )
+}
+
+function nextRepeatMode(current: number, restrictions: Record<string, boolean>): 'off' | 'context' | 'track' {
+  const modes = current === 0 ? ['context', 'track', 'off'] : current === 1 ? ['track', 'off', 'context'] : ['off', 'context', 'track']
+  return modes.find((mode) => mode === 'off' || !restrictions[`disallow_toggling_repeat_${mode}`]) as 'off' | 'context' | 'track'
 }

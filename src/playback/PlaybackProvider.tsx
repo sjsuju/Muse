@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/AuthProvider'
+import { SpotifyFailure } from '../spotify/api'
 import { useSpotifyClient } from '../spotify/useSpotify'
 import { createDeviceActivator, retryPlayerCommand } from './activateDevice'
 import { createDeviceGate } from './deviceGate'
@@ -11,8 +12,8 @@ interface PlaybackContextValue {
   state: SpotifyWebPlaybackState | null
   ready: boolean
   error: string | null
-  playTrack: (uri: string) => Promise<void>
-  playContext: (uri: string, offsetUri?: string) => Promise<void>
+  playTrack: (uri: string, visibleUris?: string[]) => Promise<void>
+  playContext: (uri: string, offsetUri?: string, visibleUris?: string[], offsetPosition?: number) => Promise<void>
   togglePlay: () => Promise<void>
   next: () => Promise<void>
   previous: () => Promise<void>
@@ -52,6 +53,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<SpotifyWebPlaybackState | null>(null)
   const [playbackError, setPlaybackError] = useState<string | null>(null)
   const deviceGate = useRef(createDeviceGate())
+  const deviceIdRef = useRef<string | null>(null)
   const activateDevice = useMemo(
     () => createDeviceActivator((path, init) => api.request(path, init)),
     [api],
@@ -85,21 +87,26 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       })
       setPlayer(instance)
       instance.addListener('ready', ((value: { device_id: string }) => {
+        deviceIdRef.current = value.device_id
         setDeviceId(value.device_id)
         deviceGate.current.ready(value.device_id)
       }) as (value: never) => void)
       instance.addListener('not_ready', ((value: { device_id: string }) => {
-        setDeviceId((current) => current === value.device_id ? null : current)
+        if (deviceIdRef.current !== value.device_id) return
+        deviceIdRef.current = null
+        setDeviceId(null)
         deviceGate.current.unavailable()
+        activateDevice.reset()
       }) as (value: never) => void)
       instance.addListener('player_state_changed', ((value: SpotifyWebPlaybackState | null) => {
-        if (value) setState(value)
+        setState(value)
+        if (value) setPlaybackError((current) => current === 'Playback error' ? null : current)
       }) as (value: never) => void)
       instance.addListener('authentication_error', (() => navigateRef.current('/failure/auth')) as (value: never) => void)
       instance.addListener('account_error', (() => navigateRef.current('/failure/account')) as (value: never) => void)
       instance.addListener('initialization_error', (() => navigateRef.current('/failure/browser')) as (value: never) => void)
       instance.addListener('playback_error', ((value: { message?: string }) => {
-        setPlaybackError(value.message?.slice(0, 160) || 'Spotify rejected that playback command')
+        setPlaybackError(value.message || 'Spotify rejected that playback command')
       }) as (value: never) => void)
       void instance.connect().then((connected) => {
         if (!connected) {
@@ -123,27 +130,41 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   // The SDK must live for the provider lifetime; route changes must not recreate it.
   }, [])
 
-  const playTrack = useCallback(async (uri: string) => {
+  const playTrack = useCallback(async (uri: string, visibleUris: string[] = [uri]) => {
     await perform(async () => {
       await player?.activateElement()
       const readyDeviceId = await deviceGate.current.wait()
       await activateDevice(readyDeviceId)
       await runPlayerCommand(readyDeviceId, `/me/player/play?device_id=${encodeURIComponent(readyDeviceId)}`, {
         method: 'PUT',
-        body: JSON.stringify({ uris: [uri] }),
+        body: JSON.stringify({ uris: rotateUris(uri, visibleUris) }),
       })
     })
   }, [activateDevice, perform, player, runPlayerCommand])
 
-  const playContext = useCallback(async (uri: string, offsetUri?: string) => {
+  const playContext = useCallback(async (uri: string, offsetUri?: string, visibleUris?: string[], offsetPosition?: number) => {
     await perform(async () => {
       await player?.activateElement()
       const readyDeviceId = await deviceGate.current.wait()
       await activateDevice(readyDeviceId)
-      await runPlayerCommand(readyDeviceId, `/me/player/play?device_id=${encodeURIComponent(readyDeviceId)}`, {
-        method: 'PUT',
-        body: JSON.stringify({ context_uri: uri, ...(offsetUri ? { offset: { uri: offsetUri } } : {}) }),
-      })
+      const path = `/me/player/play?device_id=${encodeURIComponent(readyDeviceId)}`
+      try {
+        await runPlayerCommand(readyDeviceId, path, {
+          method: 'PUT',
+          body: JSON.stringify({
+            context_uri: uri,
+            ...(offsetPosition !== undefined
+              ? { offset: { position: offsetPosition } }
+              : offsetUri ? { offset: { uri: offsetUri } } : {}),
+          }),
+        })
+      } catch (error) {
+        if (!(error instanceof SpotifyFailure) || ![400, 403, 404].includes(error.status ?? 0) || !visibleUris?.length) throw error
+        await runPlayerCommand(readyDeviceId, path, {
+          method: 'PUT',
+          body: JSON.stringify({ uris: rotateUris(offsetUri ?? visibleUris[0], visibleUris) }),
+        })
+      }
     })
   }, [activateDevice, perform, player, runPlayerCommand])
 
@@ -178,20 +199,25 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     next: async () => { await perform(async () => {
       const readyDeviceId = await deviceGate.current.wait()
       await activateDevice(readyDeviceId)
-      await player?.nextTrack()
+      await runPlayerCommand(readyDeviceId, `/me/player/next?device_id=${encodeURIComponent(readyDeviceId)}`, { method: 'POST' })
     }) },
     previous: async () => { await perform(async () => {
       const readyDeviceId = await deviceGate.current.wait()
       await activateDevice(readyDeviceId)
-      await player?.previousTrack()
+      await runPlayerCommand(readyDeviceId, `/me/player/previous?device_id=${encodeURIComponent(readyDeviceId)}`, { method: 'POST' })
     }) },
     seek: async (positionMs) => { await perform(async () => { await player?.seek(positionMs) }) },
     setVolume: async (volume) => { await perform(async () => { await player?.setVolume(volume) }) },
     setShuffle,
     setRepeat,
-  }), [activateDevice, deviceId, perform, playContext, playbackError, playTrack, player, setRepeat, setShuffle, state])
+  }), [activateDevice, deviceId, perform, playContext, playbackError, playTrack, player, runPlayerCommand, setRepeat, setShuffle, state])
 
   return <PlaybackContext.Provider value={value}>{children}</PlaybackContext.Provider>
+}
+
+function rotateUris(selectedUri: string, visibleUris: string[]): string[] {
+  const selectedIndex = visibleUris.indexOf(selectedUri)
+  return selectedIndex < 0 ? [selectedUri, ...visibleUris] : [...visibleUris.slice(selectedIndex), ...visibleUris.slice(0, selectedIndex)]
 }
 
 export function usePlayback(): PlaybackContextValue {

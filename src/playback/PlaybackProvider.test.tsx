@@ -4,8 +4,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { PlaybackProvider, usePlayback } from './PlaybackProvider'
 import { PlaylistPage } from '../pages/LibraryPages'
 import type { SpotifyTrack } from '../spotify/types'
+import { SpotifyFailure } from '../spotify/api'
 
-const request = vi.hoisted(() => vi.fn())
+const spotifyClient = vi.hoisted(() => ({ request: vi.fn() }))
+const request = spotifyClient.request
 const useSpotifyData = vi.hoisted(() => vi.fn())
 const getAccessToken = vi.hoisted(() => vi.fn(() => Promise.resolve('token')))
 const sdkListeners = vi.hoisted(() => new Map<string, (value?: unknown) => void>())
@@ -26,7 +28,7 @@ const player = vi.hoisted(() => ({
 }))
 
 vi.mock('../auth/AuthProvider', () => ({ useAuth: () => ({ getAccessToken }) }))
-vi.mock('../spotify/useSpotify', () => ({ useSpotifyData, useSpotifyClient: () => ({ request }) }))
+vi.mock('../spotify/useSpotify', () => ({ useSpotifyData, useSpotifyClient: () => spotifyClient }))
 
 const album = {
   id: 'album-1',
@@ -44,15 +46,49 @@ const track: SpotifyTrack = {
   album,
 }
 
+const trackTwo: SpotifyTrack = {
+  ...track,
+  id: 'track-2',
+  uri: 'spotify:track:track-2',
+  name: 'Second track',
+}
+
+const trackThree: SpotifyTrack = {
+  ...track,
+  id: 'track-3',
+  uri: 'spotify:track:track-3',
+  name: 'Third track',
+}
+
 function PlaybackProbe() {
-  const { ready, state } = usePlayback()
+  const { error, ready, state } = usePlayback()
   const navigate = useNavigate()
   const currentTrackUri = state?.track_window?.current_track?.uri || ''
   return <>
     <output data-testid="sdk-ready">{String(ready)}</output>
     <output data-testid="current-track">{currentTrackUri}</output>
+    <output data-testid="playback-error">{error ?? ''}</output>
     <button type="button" onClick={() => navigate('/library/tracks')}>Go to saved tracks</button>
   </>
+}
+
+function PlaybackCommandProbe() {
+  const playback = usePlayback()
+  return <>
+    <button type="button" onClick={() => void playback.next()}>Next</button>
+    <button type="button" onClick={() => void playback.previous()}>Previous</button>
+    <button type="button" onClick={() => void (playback.playTrack as unknown as (uri: string, visibleUris: string[]) => Promise<void>)(trackTwo.uri, [track.uri, trackTwo.uri, trackThree.uri])}>Play selected</button>
+  </>
+}
+
+function PlaybackContextProbe() {
+  const playback = usePlayback()
+  return <button type="button" onClick={() => void playback.playContext(
+    'spotify:playlist:playlist-1',
+    trackTwo.uri,
+    [track.uri, trackTwo.uri, trackThree.uri],
+    1,
+  )}>Play context</button>
 }
 
 describe('playlist playback shell regression', () => {
@@ -78,7 +114,7 @@ describe('playlist playback shell regression', () => {
         uri: 'spotify:playlist:playlist-1',
         name: 'Playlist',
         images: [],
-        items: { items: [{ item: track }], total: 1, next: null },
+        items: { items: [{ item: track }, { item: trackTwo }], total: 2, next: null },
       },
       loading: false,
     })
@@ -89,7 +125,7 @@ describe('playlist playback shell regression', () => {
     })
   })
 
-  it('sends a playlist track URI while keeping the SDK shell mounted and out of fatal state', async () => {
+  it('sends playlist context with the original selected row position', async () => {
     render(
       <MemoryRouter initialEntries={['/playlist/playlist-1']}>
         <div data-testid="sdk-shell">
@@ -109,7 +145,12 @@ describe('playlist playback shell regression', () => {
 
     await waitFor(() => expect(request).toHaveBeenCalledWith(
       '/me/player/play?device_id=device-1',
-      expect.objectContaining({ body: JSON.stringify({ uris: [track.uri] }) }),
+      expect.objectContaining({
+        body: JSON.stringify({
+          context_uri: 'spotify:playlist:playlist-1',
+          offset: { position: 0 },
+        }),
+      }),
     ))
     act(() => { sdkListeners.get('playback_error')?.({ message: 'Track could not start' }) })
     await waitFor(() => expect(screen.queryByText('Fatal playback state')).not.toBeInTheDocument())
@@ -135,7 +176,12 @@ describe('playlist playback shell regression', () => {
 
     await waitFor(() => expect(request).toHaveBeenCalledWith(
       '/me/player/play?device_id=device-1',
-      expect.objectContaining({ body: JSON.stringify({ uris: [track.uri] }) }),
+      expect.objectContaining({
+        body: JSON.stringify({
+          context_uri: 'spotify:playlist:playlist-1',
+          offset: { position: 0 },
+        }),
+      }),
     ))
     act(() => { sdkListeners.get('player_state_changed')?.({
         track_window: { current_track: { uri: track.uri } },
@@ -149,5 +195,163 @@ describe('playlist playback shell regression', () => {
     expect(screen.getByTestId('current-track')).toHaveTextContent(track.uri)
     expect(player.disconnect).not.toHaveBeenCalled()
     expect(player.connect).toHaveBeenCalledTimes(1)
+  })
+
+  it('rotates the selected track to the front of the visible URI queue', async () => {
+    render(
+      <MemoryRouter initialEntries={['/playlist/playlist-1']}>
+        <PlaybackProvider>
+          <PlaybackCommandProbe />
+        </PlaybackProvider>
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => expect(sdkListeners.has('ready')).toBe(true))
+    act(() => { sdkListeners.get('ready')?.({ device_id: 'device-1' }) })
+    fireEvent.click(screen.getByRole('button', { name: 'Play selected' }))
+
+    await waitFor(() => expect(request).toHaveBeenCalledWith(
+      '/me/player/play?device_id=device-1',
+      expect.objectContaining({
+        body: JSON.stringify({ uris: [trackTwo.uri, trackThree.uri, track.uri] }),
+      }),
+    ))
+    const playRequest = request.mock.calls.find(([path]) => path === '/me/player/play?device_id=device-1')
+    expect(playRequest?.[1]).toEqual(expect.objectContaining({
+      body: JSON.stringify({ uris: [trackTwo.uri, trackThree.uri, track.uri] }),
+    }))
+    expect(JSON.parse(playRequest?.[1]?.body)).not.toHaveProperty('offset')
+  })
+
+  it('starts a selected playlist row with context offset and falls back to the rotated queue after a 403', async () => {
+    request.mockImplementation((path: string, init?: RequestInit) => {
+      if (path === '/me/player') return Promise.resolve(undefined)
+      if (path.startsWith('/me/player/play') && init?.body && String(init.body).includes('context_uri')) {
+        return Promise.reject(new SpotifyFailure('account', 'Context rejected', undefined, undefined, 403))
+      }
+      return Promise.resolve(undefined)
+    })
+
+    render(
+      <MemoryRouter initialEntries={['/playlist/playlist-1']}>
+        <PlaybackProvider>
+          <PlaybackContextProbe />
+        </PlaybackProvider>
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => expect(sdkListeners.has('ready')).toBe(true))
+    act(() => { sdkListeners.get('ready')?.({ device_id: 'device-1' }) })
+    fireEvent.click(screen.getByRole('button', { name: 'Play context' }))
+
+    await waitFor(() => expect(request).toHaveBeenCalledWith(
+      '/me/player/play?device_id=device-1',
+      expect.objectContaining({
+        body: JSON.stringify({
+          context_uri: 'spotify:playlist:playlist-1',
+          offset: { position: 1 },
+        }),
+      }),
+    ))
+    await waitFor(() => expect(request).toHaveBeenCalledWith(
+      '/me/player/play?device_id=device-1',
+      expect.objectContaining({
+        body: JSON.stringify({ uris: [trackTwo.uri, trackThree.uri, track.uri] }),
+      }),
+    ))
+  })
+
+  it('uses the Spotify next and previous endpoints through the request client', async () => {
+    render(
+      <MemoryRouter initialEntries={['/playlist/playlist-1']}>
+        <PlaybackProvider>
+          <PlaybackCommandProbe />
+        </PlaybackProvider>
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => expect(sdkListeners.has('ready')).toBe(true))
+    act(() => { sdkListeners.get('ready')?.({ device_id: 'device-1' }) })
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Previous' }))
+
+    await waitFor(() => expect(request).toHaveBeenCalledWith(
+      '/me/player/next?device_id=device-1',
+      { method: 'POST' },
+    ))
+    await waitFor(() => expect(request).toHaveBeenCalledWith(
+      '/me/player/previous?device_id=device-1',
+      { method: 'POST' },
+    ))
+  })
+
+  it('invalidates only the device reported not_ready and clears state on a null SDK snapshot', async () => {
+    render(
+      <MemoryRouter initialEntries={['/playlist/playlist-1']}>
+        <PlaybackProvider>
+          <PlaybackProbe />
+          <PlaybackCommandProbe />
+        </PlaybackProvider>
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => expect(sdkListeners.has('ready')).toBe(true))
+    act(() => { sdkListeners.get('ready')?.({ device_id: 'device-1' }) })
+    await waitFor(() => expect(screen.getByTestId('sdk-ready')).toHaveTextContent('true'))
+    act(() => { sdkListeners.get('not_ready')?.({ device_id: 'device-1' }) })
+    await waitFor(() => expect(screen.getByTestId('sdk-ready')).toHaveTextContent('false'))
+
+    act(() => { sdkListeners.get('ready')?.({ device_id: 'device-2' }) })
+    await waitFor(() => expect(screen.getByTestId('sdk-ready')).toHaveTextContent('true'))
+    act(() => { sdkListeners.get('not_ready')?.({ device_id: 'device-1' }) })
+    expect(screen.getByTestId('sdk-ready')).toHaveTextContent('true')
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+    await waitFor(() => expect(request).toHaveBeenCalledWith(
+      '/me/player/next?device_id=device-2',
+      { method: 'POST' },
+    ))
+
+    act(() => { sdkListeners.get('player_state_changed')?.({ track_window: { current_track: { uri: track.uri } } }) })
+    await waitFor(() => expect(screen.getByTestId('current-track')).toHaveTextContent(track.uri))
+    act(() => { sdkListeners.get('player_state_changed')?.(null) })
+    await waitFor(() => expect(screen.getByTestId('current-track')).toBeEmptyDOMElement())
+  })
+
+  it('transfers playback again when the active SDK device reconnects', async () => {
+    render(
+      <MemoryRouter>
+        <PlaybackProvider>
+          <PlaybackCommandProbe />
+        </PlaybackProvider>
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => expect(sdkListeners.has('ready')).toBe(true))
+    act(() => { sdkListeners.get('ready')?.({ device_id: 'device-1' }) })
+    fireEvent.click(screen.getByRole('button', { name: 'Play selected' }))
+    await waitFor(() => expect(request.mock.calls.filter(([path]) => path === '/me/player')).toHaveLength(1))
+
+    act(() => { sdkListeners.get('not_ready')?.({ device_id: 'device-1' }) })
+    act(() => { sdkListeners.get('ready')?.({ device_id: 'device-1' }) })
+    fireEvent.click(screen.getByRole('button', { name: 'Play selected' }))
+
+    await waitFor(() => expect(request.mock.calls.filter(([path]) => path === '/me/player')).toHaveLength(2))
+  })
+
+  it('clears a transient SDK error when valid playback state arrives', async () => {
+    render(
+      <MemoryRouter>
+        <PlaybackProvider>
+          <PlaybackProbe />
+        </PlaybackProvider>
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => expect(sdkListeners.has('playback_error')).toBe(true))
+    act(() => { sdkListeners.get('playback_error')?.({ message: 'Playback error' }) })
+    await waitFor(() => expect(screen.getByTestId('playback-error')).toHaveTextContent('Playback error'))
+
+    act(() => { sdkListeners.get('player_state_changed')?.({ track_window: { current_track: { uri: track.uri } } }) })
+    await waitFor(() => expect(screen.getByTestId('playback-error')).toBeEmptyDOMElement())
   })
 })

@@ -2,7 +2,7 @@ import { SpotifyFailure } from '../spotify/api'
 
 function playbackErrorMessage(error: unknown): string {
   if (error instanceof SpotifyFailure) return error.diagnostic ?? error.message
-  if (error instanceof Error) return error.message.slice(0, 160)
+  if (error instanceof Error) return error.message
   return 'Spotify could not complete that playback command'
 }
 

@@ -54,6 +54,15 @@ describe('SpotifyApiClient', () => {
     } satisfies Partial<SpotifyFailure>)
   })
 
+  it('accepts a successful player command even when its response body is not JSON', async () => {
+    const client = new SpotifyApiClient(
+      async () => 'token',
+      async () => new Response('device-command-id', { status: 200, headers: { 'Content-Type': 'text/plain' } }),
+    )
+
+    await expect(client.request('/me/player/next', { method: 'POST' })).resolves.toBeUndefined()
+  })
+
   it('keeps a safe diagnostic when the browser blocks the Spotify API request', async () => {
     const client = new SpotifyApiClient(
       async () => 'private-token',

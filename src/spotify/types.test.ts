@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { compactSpotifyItems, playablePlaylistTracks } from './types'
+import { compactSpotifyItems, playablePlaylistEntries, playablePlaylistTracks } from './types'
 import type { SpotifyTrack } from './types'
 
 describe('Spotify response normalization', () => {
@@ -21,5 +21,8 @@ describe('Spotify response normalization', () => {
     const blocked = { ...track, id: 'blocked', is_playable: false }
 
     expect(playablePlaylistTracks([null, { track: null }, { item: blocked }, { item: track }])).toEqual([track])
+    expect(playablePlaylistEntries([null, { track: null }, { item: blocked }, { item: track }])).toEqual([
+      { track, position: 3 },
+    ])
   })
 })

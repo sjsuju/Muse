@@ -17,21 +17,19 @@ export async function retryPlayerCommand<T>(
 
 export function createDeviceActivator(request: SpotifyRequest) {
   let activeDeviceId: string | null = null
-  let activation: Promise<void> | null = null
+  let activation = Promise.resolve()
 
-  const activate = async (deviceId: string): Promise<void> => {
-    if (activeDeviceId === deviceId) return
-    if (!activation) {
-      activation = request('/me/player', {
+  const activate = (deviceId: string): Promise<void> => {
+    const nextActivation = activation.then(async () => {
+      if (activeDeviceId === deviceId) return
+      await request('/me/player', {
         method: 'PUT',
         body: JSON.stringify({ device_ids: [deviceId], play: false }),
-      }).then(() => {
-        activeDeviceId = deviceId
-      }).finally(() => {
-        activation = null
       })
-    }
-    await activation
+      activeDeviceId = deviceId
+    })
+    activation = nextActivation.catch(() => undefined)
+    return nextActivation
   }
   activate.reset = () => {
     activeDeviceId = null
