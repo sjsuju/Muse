@@ -19,7 +19,7 @@ function ConfigError({ message }: { message: string }) {
 const root = ReactDOM.createRoot(document.getElementById('root')!)
 try {
   const config = getConfig()
-  root.render(<React.StrictMode><BrowserRouter><MuseApp config={config} /></BrowserRouter></React.StrictMode>)
+  root.render(<React.StrictMode><BrowserRouter basename={import.meta.env.BASE_URL}><MuseApp config={config} /></BrowserRouter></React.StrictMode>)
 } catch (error) {
   const message = error instanceof Error ? error.message : 'Muse could not read its configuration.'
   root.render(<React.StrictMode><ConfigError message={message} /></React.StrictMode>)

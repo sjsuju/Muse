@@ -19,6 +19,7 @@ export function getConfig(environment: Environment = import.meta.env): AppConfig
     throw new Error('VITE_SPOTIFY_CLIENT_ID is required')
   }
 
+  const basePath = String(environment.BASE_URL ?? '/')
   const fallbackOrigin =
     typeof window === 'undefined' ? 'http://127.0.0.1:5173' : window.location.origin
 
@@ -26,6 +27,6 @@ export function getConfig(environment: Environment = import.meta.env): AppConfig
     spotifyClientId,
     spotifyRedirectUri:
       String(environment.VITE_SPOTIFY_REDIRECT_URI ?? '').trim() ||
-      `${fallbackOrigin}/auth/callback`,
+      `${fallbackOrigin}${basePath}auth/callback`,
   }
 }
